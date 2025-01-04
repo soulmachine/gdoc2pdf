@@ -2,7 +2,8 @@ function exportGDocsToPDF() {
     const rootFolder = DriveApp.getFolderById("Your-Input-Folder-ID"); // Replace with your folder's ID
     const exportFolder = DriveApp.getFolderById("Your-Output-Folder-ID"); // Replace with your folder's ID
 
-    processFolder(rootFolder, exportFolder);
+    Logger.log(`Exporting all .gdoc files from ${rootFolder.getName()} to ${exportFolder.getName()}`);
+    processFolder("", rootFolder, exportFolder);
 
     Logger.log(`All .gdoc files have been exported to: ${exportFolder.getName()}`);
 }
@@ -11,6 +12,7 @@ function exportGDocsToPDF() {
  * Recursively processes a Google Drive folder and its subfolders, converting all Google Docs to PDFs.
  * The converted PDFs maintain the same folder structure as the source in the export location.
  * 
+ * @param {string} parentPath - The parent path, for logging only
  * @param {GoogleAppsScript.Drive.Folder} folder - The source folder containing Google Docs to be converted
  * @param {GoogleAppsScript.Drive.Folder} exportFolder - The destination folder where PDFs will be saved
  * 
@@ -22,7 +24,7 @@ function exportGDocsToPDF() {
  * @throws {Error} If either folder or exportFolder is invalid or inaccessible
  * @returns {void}
  */
-function processFolder(folder, exportFolder) {
+function processFolder(parentPath, folder, exportFolder) {
     // Define supported Google Workspace file types and their MIME types
     const SUPPORTED_TYPES = [
         MimeType.GOOGLE_DOCS,
@@ -38,24 +40,21 @@ function processFolder(folder, exportFolder) {
             const fileId = file.getId();
             const fileName = file.getName();
 
-            // Get the full path by traversing up through parent folders
-            let path = exportFolder.getName();
-            let parent = exportFolder.getParents();
-            while (parent.hasNext()) {
-                path = parent.next().getName() + '/' + path;
-            }
-
             // Check if the PDF already exists
+            const pdfFilePath = `${parentPath}/${exportFolder.getName()}/${fileName}.pdf`;
             if (pdfExists(exportFolder, fileName + ".pdf")) {
-                Logger.log(`Skipped: ${path}/${fileName}.pdf already exists.`);
+                Logger.log(`Skipped: ${pdfFilePath} already exists.`);
                 continue;
             }
 
             // Export the file using UrlFetchApp
             const pdfBlob = exportFileAsPDF(fileId, fileName);
-            exportFolder.createFile(pdfBlob);
-
-            Logger.log(`Exported: ${path}/${fileName}.pdf`);
+            if (pdfBlob) {
+                exportFolder.createFile(pdfBlob);
+                Logger.log(`Exported: ${pdfFilePath}`);
+            } else {
+                Logger.log(`Failed to export: ${pdfFilePath}`);
+            }
         }
     }
 
@@ -64,7 +63,7 @@ function processFolder(folder, exportFolder) {
     while (subfolders.hasNext()) {
         const subfolder = subfolders.next();
         const subfolderName = subfolder.getName();
-        
+
         // Check if export subfolder already exists
         let newExportSubfolder;
         const existingFolders = exportFolder.getFoldersByName(subfolderName);
@@ -73,8 +72,8 @@ function processFolder(folder, exportFolder) {
         } else {
             newExportSubfolder = exportFolder.createFolder(subfolderName);
         }
-        
-        processFolder(subfolder, newExportSubfolder);
+
+        processFolder(`${parentPath}/${exportFolder.getName()}`, subfolder, newExportSubfolder);
     }
 }
 
@@ -89,13 +88,24 @@ function exportFileAsPDF(fileId, fileName) {
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=application/pdf`;
     const token = ScriptApp.getOAuthToken();
 
-    const response = UrlFetchApp.fetch(url, {
-        headers: {
-            Authorization: `Bearer ${token}`
-        }
-    });
+    try {
+        const response = UrlFetchApp.fetch(url, {
+            headers: {
+                Authorization: `Bearer ${token}`
+            },
+            muteHttpExceptions: true  // Allow us to handle the error
+        });
 
-    const pdfBlob = response.getBlob();
-    pdfBlob.setName(fileName + ".pdf");
-    return pdfBlob;
+        if (response.getResponseCode() === 403) { // Error 403: File too large to export
+            Logger.log(`Error 403: File too large to export - ${fileName}`);
+            return null;
+        }
+
+        const pdfBlob = response.getBlob();
+        pdfBlob.setName(fileName + ".pdf");
+        return pdfBlob;
+    } catch (e) {
+        Logger.log(`Export error for ${fileName}: ${e.toString()}`);
+        return null;
+    }
 }
